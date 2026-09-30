@@ -1,0 +1,16 @@
+{
+	"compatibility_date": "2025-10-08",
+	"main": "src/index.ts",
+	"name": "ma-boutique-api",
+	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_id": "9a49a77c-f80f-4ec5-a425-08a679fd0476",
+			"database_name": "ma-boutique-en-ligne"
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
+}
