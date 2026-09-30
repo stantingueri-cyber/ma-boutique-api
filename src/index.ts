@@ -196,8 +196,69 @@ export default {
           500
         );
       }
-    }
+    if (url.pathname === "/api/products" && request.method === "POST") {
+      try {
+        const body = (await request.json()) as {
+          shop_id?: number;
+          name?: string;
+          description?: string;
+          price?: number;
+          old_price?: number | null;
+          stock?: number;
+          category?: string;
+        };
 
+        if (
+          !body.shop_id ||
+          !body.name ||
+          body.price === undefined ||
+          body.stock === undefined ||
+          !body.category
+        ) {
+          return json(
+            {
+              success: false,
+              message: "Champs obligatoires manquants",
+            },
+            400
+          );
+        }
+
+        const product = await env.DB.prepare(
+          `INSERT INTO products
+          (shop_id, name, description, price, old_price, stock, category, active)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
+        )
+          .bind(
+            body.shop_id,
+            body.name,
+            body.description ?? "",
+            body.price,
+            body.old_price ?? null,
+            body.stock,
+            body.category
+          )
+          .run();
+
+        return json(
+          {
+            success: true,
+            message: "Article créé avec succès",
+            product_id: product.meta.last_row_id,
+          },
+          201
+        );
+      } catch (error) {
+        return json(
+          {
+            success: false,
+            message: "Impossible de créer l'article",
+            error: String(error),
+          },
+          500
+        );
+      }
+    }    }
     return json(
       {
         success: false,
