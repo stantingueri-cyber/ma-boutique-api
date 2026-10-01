@@ -195,7 +195,7 @@ export default {
           },
           500
         );
-      }
+      }}
     if (url.pathname === "/api/products" && request.method === "POST") {
       try {
         const body = (await request.json()) as {
