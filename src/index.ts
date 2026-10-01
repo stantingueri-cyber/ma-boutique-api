@@ -258,7 +258,7 @@ export default {
           500
         );
       }
-    }    }
+    }    
     return json(
       {
         success: false,
