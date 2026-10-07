@@ -44,7 +44,7 @@ export default {
       return json({
         success: true,
         app: "Ma Boutique en Ligne",
-        message: "API opérationnelle",
+        message: "API opÃ©rationnelle",
       });
     }
 
@@ -56,19 +56,19 @@ export default {
 
         return json({
           success: true,
-          message: "Connexion D1 réussie",
+          message: "Connexion D1 rÃ©ussie",
           tables: tables.results,
         });
       } catch (error) {
         return json({
           success: false,
-          message: "Erreur de connexion à D1",
+          message: "Erreur de connexion Ã  D1",
           error: String(error),
         }, 500);
       }
     }
 
-    // Création du commerçant et de sa boutique
+    // CrÃ©ation du commerÃ§ant et de sa boutique
     if (url.pathname === "/api/shops" && request.method === "POST") {
       try {
         const body = await request.json() as {
@@ -115,7 +115,7 @@ export default {
         if (existingMerchant) {
           return json({
             success: false,
-            message: "Cette adresse e-mail est déjà utilisée",
+            message: "Cette adresse e-mail est dÃ©jÃ  utilisÃ©e",
           }, 409);
         }
 
@@ -126,7 +126,7 @@ export default {
         if (existingShop) {
           return json({
             success: false,
-            message: "Ce lien de boutique est déjà utilisé",
+            message: "Ce lien de boutique est dÃ©jÃ  utilisÃ©",
           }, 409);
         }
 
@@ -166,7 +166,7 @@ export default {
 
         return json({
           success: true,
-          message: "Boutique créée avec succès",
+          message: "Boutique crÃ©Ã©e avec succÃ¨s",
           merchant_id: merchantId,
           shop_id: shop.meta.last_row_id,
           slug: body.slug,
@@ -174,13 +174,13 @@ export default {
       } catch (error) {
         return json({
           success: false,
-          message: "Impossible de créer la boutique",
+          message: "Impossible de crÃ©er la boutique",
           error: String(error),
         }, 500);
       }
     }
 
-    // Connexion du commerçant
+    // Connexion du commerÃ§ant
     if (url.pathname === "/api/login" && request.method === "POST") {
       try {
         const body = await request.json() as {
@@ -223,7 +223,7 @@ export default {
         if (!shop) {
           return json({
             success: false,
-            message: "Aucune boutique liée à ce compte",
+            message: "Aucune boutique liÃ©e Ã  ce compte",
           }, 404);
         }
 
@@ -241,90 +241,82 @@ export default {
       }
     }
 
-    // Chargement des articles
+    // Articles et galerie, dans la table product_images existante.
     if (url.pathname === "/api/products" && request.method === "GET") {
+      const shopId = Number(url.searchParams.get("shop_id"));
+      if (!Number.isSafeInteger(shopId) || shopId <= 0)
+        return json({success:false,message:"shop_id obligatoire"},400);
       try {
-        const shopId = Number(url.searchParams.get("shop_id"));
-
-        if (!shopId) {
-          return json({
-            success: false,
-            message: "shop_id obligatoire",
-          }, 400);
+        const results = await env.DB.batch([
+          env.DB.prepare(`SELECT id, shop_id, name, description, price, old_price,
+            stock, category, active FROM products WHERE shop_id=? AND active=1
+            ORDER BY id DESC`).bind(shopId),
+          env.DB.prepare(`SELECT pi.product_id, pi.image_url, pi.position
+            FROM product_images pi JOIN products p ON p.id=pi.product_id
+            WHERE p.shop_id=? AND p.active=1 ORDER BY pi.position, pi.id`).bind(shopId)
+        ]);
+        const galleries = new Map<number,string[]>();
+        for (const row of results[1].results as any[]) {
+          const list = galleries.get(Number(row.product_id)) || [];
+          if (list.length < 3) list.push(row.image_url);
+          galleries.set(Number(row.product_id),list);
         }
-
-        const rows = await env.DB.prepare(`
-          SELECT id, shop_id, name, description, price,
-                 old_price, stock, category, active
-          FROM products
-          WHERE shop_id = ? AND active = 1
-          ORDER BY id DESC
-        `).bind(shopId).all();
-
-        return json({
-          success: true,
-          products: rows.results,
-        });
-      } catch (error) {
-        return json({
-          success: false,
-          message: "Impossible de charger les articles",
-          error: String(error),
-        }, 500);
+        return json({success:true,products:(results[0].results as any[]).map(p=>({
+          ...p, images:galleries.get(Number(p.id)) || []
+        }))});
+      } catch(error) {
+        return json({success:false,message:"Impossible de charger les articles"},500);
       }
     }
 
-    // Ajout d'un article
-    if (url.pathname === "/api/products" && request.method === "POST") {
+    if (url.pathname === "/api/products" &&
+        (request.method === "POST" || request.method === "PUT")) {
       try {
-        const body = await request.json() as {
-          shop_id?: number;
-          name?: string;
-          description?: string;
-          price?: number;
-          old_price?: number | null;
-          stock?: number;
-          category?: string;
-        };
-
-        if (
-          !body.shop_id ||
-          !body.name ||
-          body.price === undefined ||
-          body.stock === undefined ||
-          !body.category
-        ) {
-          return json({
-            success: false,
-            message: "Champs obligatoires manquants",
-          }, 400);
+        const body = await request.json() as any;
+        const editing = request.method === "PUT";
+        if (!Number.isSafeInteger(body.shop_id) || body.shop_id <= 0 ||
+            typeof body.name !== "string" || !body.name.trim() ||
+            typeof body.category !== "string" || !body.category.trim() ||
+            !Number.isFinite(body.price) || body.price <= 0 ||
+            !Number.isSafeInteger(body.stock) || body.stock < 0 ||
+            (body.old_price != null && (!Number.isFinite(body.old_price) || body.old_price < 0)) ||
+            (editing && (!Number.isSafeInteger(body.id) || body.id <= 0))) {
+          return json({success:false,message:"Champs de lâ€™article invalides"},400);
         }
-
-        const product = await env.DB.prepare(`
-          INSERT INTO products
-          (shop_id, name, description, price, old_price, stock, category, active)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-        `).bind(
-          body.shop_id,
-          body.name,
-          body.description ?? "",
-          body.price,
-          body.old_price ?? null,
-          body.stock,
-          body.category
-        ).run();
-
-        return json({
-          success: true,
-          message: "Article créé avec succès",
-          product_id: product.meta.last_row_id,
-        }, 201);
-      } catch (error) {
-        return json({
-          success: false,
-          message: "Impossible de créer l'article",
-          error: String(error),
-        }, 500);
+        const images = body.images;
+        if (images !== undefined && (!Array.isArray(images) || images.length > 3 ||
+          images.some((im:unknown)=>typeof im !== "string" || im.length > 350000 ||
+            !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(im)))) {
+          return json({success:false,message:"Photos invalides ou trop volumineuses (3 maximum)"},400);
+        }
+        if (editing) {
+          const exists = await env.DB.prepare("SELECT id FROM products WHERE id=? AND shop_id=? AND active=1")
+            .bind(body.id,body.shop_id).first();
+          if (!exists) return json({success:false,message:"Article introuvable dans cette boutique"},404);
+        }
+        const values = [body.name.trim(),body.description || "",body.price,
+          body.old_price ?? null,body.stock,body.category.trim()];
+        const statements = [editing
+          ? env.DB.prepare(`UPDATE products SET name=?,description=?,price=?,old_price=?,stock=?,category=?
+              WHERE id=? AND shop_id=? AND active=1`).bind(...values,body.id,body.shop_id)
+          : env.DB.prepare(`INSERT INTO products
+              (name,description,price,old_price,stock,category,shop_id,active)
+              VALUES (?,?,?,?,?,?,?,1)`).bind(...values,body.shop_id)];
+        if (editing && images !== undefined)
+          statements.push(env.DB.prepare("DELETE FROM product_images WHERE product_id=?").bind(body.id));
+        for (let i=0;i<(images || []).length;i++) {
+          // MAX(id) is read inside the same transaction as the product insert.
+          statements.push(editing
+            ? env.DB.prepare("INSERT INTO product_images (product_id,image_url,position) VALUES (?,?,?)")
+                .bind(body.id,images[i],i+1)
+            : env.DB.prepare(`INSERT INTO product_images (product_id,image_url,position)
+                VALUES ((SELECT MAX(id) FROM products),?,?)`).bind(images[i],i+1));
+        }
+        const results = await env.DB.batch(statements);
+        return json({success:true,product_id:editing ? body.id : results[0].meta.last_row_id,
+          message:editing ? "Article modifiÃ© avec ses photos" : "Article crÃ©Ã© avec ses photos"},editing ? 200 : 201);
+      } catch(error) {
+        return json({success:false,message:"Impossible dâ€™enregistrer lâ€™article et ses photos"},500);
       }
     }
 
