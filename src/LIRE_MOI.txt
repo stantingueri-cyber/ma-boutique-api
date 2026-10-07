@@ -1,0 +1,22 @@
+CORRECTIF COMMANDES ET PHOTOS — Ma Boutique en Ligne
+
+INSTALLATION
+1. GitHub > ma-boutique-api > src > index.ts : remplacer tout le contenu par src/index.ts de ce ZIP, ou par Code_Serveur_Commandes.txt fourni séparément. Commit changes. Attendre le déploiement vert.
+2. Ouvrir le nouveau Index.html de ce ZIP. Se déconnecter puis se reconnecter une fois pour activer la nouvelle session commerçant. Utiliser le compte D1 déjà créé; ne pas créer une autre boutique.
+3. Tester une commande directe, puis une commande du panier. Après sauvegarde, WhatsApp s’ouvre avec le message; l’utilisateur choisit ensuite de l’envoyer.
+4. Espace commerçant > Commandes : vérifier l’identité, le téléphone, l’adresse, les articles, les quantités et le montant. Valider la vente pour diminuer le stock et mettre à jour le bilan.
+
+COMPORTEMENT
+- Sauvegarde D1 de la commande et des articles avant l’ouverture de WhatsApp.
+- Prix et stock vérifiés côté serveur. Total calculé à partir des produits.
+- Nouvelle tentative identique après erreur : même référence, sans doublon.
+- Validation de vente une seule fois avec diminution atomique du stock.
+- Photos conservées et interface premium inchangée.
+- Session conservée à la réouverture, pendant trente jours.
+- Deux petites tables de support, mbl_sessions et mbl_order_meta, sont créées automatiquement. Les tables existantes et leurs données sont conservées. Le statut D1 initial reste new; la validation de vente est suivie dans mbl_order_meta.
+- La lecture des coordonnées clients nécessite une session du commerçant.
+
+VALIDATION
+Tests locaux avec SQLite et navigateur : commande directe 5 × 10 500 = 52 500, panier, lecture authentifiée, prix modifié, stock insuffisant, boutique différente, nouvelle tentative sans doublon, double validation, annulation complète si une insertion échoue, conservation du formulaire après échec et de la session après rechargement.
+Le déploiement et la vérification réelle sur Android restent à faire.
+Les autres fonctions historiques non migrées (notamment retrait d’article et liens publics) ne sont pas validées par ce correctif.
