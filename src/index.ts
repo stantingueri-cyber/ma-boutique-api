@@ -25,6 +25,32 @@ async function hashPassword(password: string): Promise<string> {
     .join("");
 }
 
+async function ensureOrderSupport(env: Env) {
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_sessions (
+      token_hash TEXT PRIMARY KEY, merchant_id INTEGER NOT NULL, expires_at INTEGER NOT NULL)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_order_meta (
+      order_id INTEGER PRIMARY KEY REFERENCES orders(id), request_key TEXT UNIQUE,
+      fingerprint TEXT, validated INTEGER NOT NULL DEFAULT 0 CHECK(validated IN (0,1)), validation_key TEXT)`)
+  ]);
+}
+async function issueSession(env: Env, merchantId: number) {
+  await ensureOrderSupport(env);
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
+  await env.DB.prepare("INSERT INTO mbl_sessions (token_hash,merchant_id,expires_at) VALUES (?,?,?)")
+    .bind(await hashPassword(token),merchantId,Date.now()+30*24*3600*1000).run();
+  return token;
+}
+async function ownsShop(env: Env, request: Request, shopId: number) {
+  const token = request.headers.get("Authorization")?.replace(/^Bearer /,"") || "";
+  if (!/^[a-f0-9]{64}$/.test(token)) return false;
+  await ensureOrderSupport(env);
+  return !!await env.DB.prepare(`SELECT s.id FROM shops s JOIN mbl_sessions ms ON ms.merchant_id=s.merchant_id
+    WHERE s.id=? AND ms.token_hash=? AND ms.expires_at>?`)
+    .bind(shopId,await hashPassword(token),Date.now()).first();
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -169,6 +195,7 @@ export default {
           message: "Boutique crÃ©Ã©e avec succÃ¨s",
           merchant_id: merchantId,
           shop_id: shop.meta.last_row_id,
+          session_token: await issueSession(env,Number(merchantId)),
           slug: body.slug,
         }, 201);
       } catch (error) {
@@ -231,6 +258,7 @@ export default {
           success: true,
           merchant,
           shop,
+          session_token: await issueSession(env,Number(merchant.id)),
         });
       } catch (error) {
         return json({
@@ -318,6 +346,103 @@ export default {
       } catch(error) {
         return json({success:false,message:"Impossible dâ€™enregistrer lâ€™article et ses photos"},500);
       }
+    }
+
+    if (url.pathname === "/api/orders" && request.method === "POST") {
+      try {
+        const b = await request.json() as any;
+        if (!Number.isSafeInteger(b.shop_id) || b.shop_id<=0 ||
+          typeof b.customer_name!=="string" || !b.customer_name.trim() || b.customer_name.length>150 ||
+          typeof b.customer_phone!=="string" || !b.customer_phone.trim() || b.customer_phone.length>40 ||
+          typeof b.customer_address!=="string" || !b.customer_address.trim() || b.customer_address.length>2000 ||
+          typeof b.payment_method!=="string" || !b.payment_method.trim() || b.payment_method.length>100 ||
+          typeof b.request_key!=="string" || !/^[a-f0-9-]{36}$/.test(b.request_key) ||
+          !Array.isArray(b.items) || !b.items.length || b.items.length>50 ||
+          b.items.some((i:any)=>!Number.isSafeInteger(i.product_id)||i.product_id<=0 ||
+            !Number.isSafeInteger(i.quantity)||i.quantity<=0||i.quantity>100000))
+          return json({success:false,message:"Informations de commande invalides"},400);
+        const quantities = new Map<number,number>();
+        for (const i of b.items) quantities.set(i.product_id,(quantities.get(i.product_id)||0)+i.quantity);
+        const items = [...quantities].sort((a,b)=>a[0]-b[0]).map(([product_id,quantity])=>({product_id,quantity}));
+        const normalized = {shop_id:b.shop_id,customer_name:b.customer_name.trim(),
+          customer_phone:b.customer_phone.trim(),customer_address:b.customer_address.trim(),
+          payment_method:b.payment_method.trim(),items};
+        const fingerprint = await hashPassword(JSON.stringify(normalized));
+        await ensureOrderSupport(env);
+        const prior = await env.DB.prepare(`SELECT om.fingerprint,o.id,o.total FROM mbl_order_meta om
+          JOIN orders o ON o.id=om.order_id WHERE om.request_key=?`).bind(b.request_key).first<any>();
+        if (prior) {
+          if (prior.fingerprint!==fingerprint) return json({success:false,message:"RÃ©fÃ©rence de commande dÃ©jÃ  utilisÃ©e"},409);
+          return json({success:true,order_id:prior.id,total:prior.total,replayed:true});
+        }
+        const rows = await env.DB.prepare(`SELECT id,name,price,stock FROM products WHERE shop_id=? AND active=1
+          AND id IN (${items.map(()=>"?").join(",")})`).bind(b.shop_id,...items.map(i=>i.product_id)).all<any>();
+        const list = items.map(i=>({item:i,product:rows.results.find(p=>Number(p.id)===i.product_id)}));
+        if (list.some(x=>!x.product || Number(x.product.stock)<x.item.quantity))
+          return json({success:false,message:"Un article est indisponible ou sa quantitÃ© dÃ©passe le stock"},409);
+        const total = list.reduce((t,x)=>t+Number(x.product!.price)*x.item.quantity,0);
+        if (!Number.isSafeInteger(total)||total<=0) return json({success:false,message:"Montant de commande invalide"},400);
+        // Reject stale displayed prices, instead of silently changing the amount.
+        if (b.expected_total!==total) return json({success:false,message:"Le prix a changÃ©. Rechargez les articles avant de commander."},409);
+        const statements = [env.DB.prepare(`INSERT INTO orders
+          (shop_id,customer_name,customer_phone,customer_address,payment_method,total)
+          VALUES (?,?,?,?,?,?)`).bind(b.shop_id,normalized.customer_name,normalized.customer_phone,
+            normalized.customer_address,normalized.payment_method,total)];
+        for(const x of list) statements.push(env.DB.prepare(`INSERT INTO order_items
+          (order_id,product_id,product_name,unit_price,quantity,subtotal)
+          VALUES ((SELECT MAX(id) FROM orders),?,?,?,?,?)`)
+          .bind(x.item.product_id,x.product!.name,x.product!.price,x.item.quantity,Number(x.product!.price)*x.item.quantity));
+        statements.push(env.DB.prepare(`INSERT INTO mbl_order_meta (order_id,request_key,fingerprint)
+          VALUES ((SELECT MAX(id) FROM orders),?,?)`).bind(b.request_key,fingerprint));
+        let results;
+        try { results=await env.DB.batch(statements); }
+        catch(error) {
+          const duplicate=await env.DB.prepare(`SELECT om.fingerprint,o.id,o.total FROM mbl_order_meta om
+            JOIN orders o ON o.id=om.order_id WHERE om.request_key=?`).bind(b.request_key).first<any>();
+          if(duplicate?.fingerprint===fingerprint) return json({success:true,order_id:duplicate.id,total:duplicate.total,replayed:true});
+          throw error;
+        }
+        return json({success:true,order_id:results[0].meta.last_row_id,total},201);
+      } catch(error) {return json({success:false,message:"Impossible dâ€™enregistrer la commande. Vos informations sont conservÃ©es pour rÃ©essayer."},500);}
+    }
+    if (url.pathname === "/api/orders" && request.method === "GET") {
+      try {
+        const sid=Number(url.searchParams.get("shop_id"));
+        if(!await ownsShop(env,request,sid)) return json({success:false,message:"Reconnectez-vous Ã  votre espace commerÃ§ant pour consulter les commandes."},401);
+        const result=await env.DB.batch([
+          env.DB.prepare(`SELECT o.*,COALESCE(om.validated,0) AS sale_validated FROM orders o
+            LEFT JOIN mbl_order_meta om ON om.order_id=o.id WHERE o.shop_id=? ORDER BY o.id DESC`).bind(sid),
+          env.DB.prepare(`SELECT oi.* FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.shop_id=? ORDER BY oi.id`).bind(sid)
+        ]);
+        return json({success:true,orders:(result[0].results as any[]).map(o=>({...o,
+          order_items:(result[1].results as any[]).filter(i=>i.order_id===o.id)}))});
+      }catch(error){return json({success:false,message:"Impossible de charger les commandes"},500);}
+    }
+    if(url.pathname==="/api/orders/validate" && request.method==="POST") {
+      try {
+        const b=await request.json() as any;
+        if(!Number.isSafeInteger(b.order_id)||!Number.isSafeInteger(b.shop_id)) return json({success:false,message:"Commande invalide"},400);
+        if(!await ownsShop(env,request,b.shop_id)) return json({success:false,message:"Reconnectez-vous Ã  votre espace commerÃ§ant."},401);
+        const order=await env.DB.prepare("SELECT id FROM orders WHERE id=? AND shop_id=?").bind(b.order_id,b.shop_id).first();
+        if(!order) return json({success:false,message:"Commande introuvable"},404);
+        const key=crypto.randomUUID();
+        const statements=[
+          env.DB.prepare("INSERT OR IGNORE INTO mbl_order_meta (order_id) VALUES (?)").bind(b.order_id),
+          env.DB.prepare(`UPDATE mbl_order_meta SET validated=CASE WHEN EXISTS (
+            SELECT 1 FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id
+            WHERE oi.order_id=? AND (p.id IS NULL OR p.shop_id<>? OR p.active<>1 OR
+              p.stock<(SELECT SUM(quantity) FROM order_items WHERE order_id=? AND product_id=p.id))
+          ) THEN -1 ELSE 1 END,validation_key=? WHERE order_id=? AND validated=0`)
+          .bind(b.order_id,b.shop_id,b.order_id,key,b.order_id),
+          env.DB.prepare(`UPDATE products SET stock=stock-(SELECT SUM(quantity) FROM order_items
+            WHERE order_id=? AND product_id=products.id)
+            WHERE shop_id=? AND id IN (SELECT product_id FROM order_items WHERE order_id=?)
+            AND EXISTS (SELECT 1 FROM mbl_order_meta WHERE order_id=? AND validation_key=?)`)
+            .bind(b.order_id,b.shop_id,b.order_id,b.order_id,key)
+        ];
+        await env.DB.batch(statements);
+        return json({success:true,message:"Vente validÃ©e et stock mis Ã  jour"});
+      }catch(error){return json({success:false,message:"Vente non validÃ©e. VÃ©rifiez le stock des articles et rÃ©essayez."},409);}
     }
 
     return json({
