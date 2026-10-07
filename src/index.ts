@@ -297,6 +297,25 @@ export default {
       }
     }
 
+    if (url.pathname === "/api/products" && request.method === "DELETE") {
+      try {
+        const body = await request.json() as any;
+        if (!Number.isSafeInteger(body.shop_id) || body.shop_id<=0 ||
+            !Number.isSafeInteger(body.id) || body.id<=0)
+          return json({success:false,message:"Article invalide"},400);
+        if (!await ownsShop(env,request,body.shop_id))
+          return json({success:false,message:"Reconnectez-vous Ã  votre boutique."},401);
+        const product=await env.DB.prepare("SELECT id FROM products WHERE id=? AND shop_id=?")
+          .bind(body.id,body.shop_id).first();
+        if(!product)return json({success:false,message:"Article introuvable dans cette boutique"},404);
+        await env.DB.prepare("UPDATE products SET active=0 WHERE id=? AND shop_id=?")
+          .bind(body.id,body.shop_id).run();
+        return json({success:true,message:"Article retirÃ©"});
+      } catch(error) {
+        return json({success:false,message:"Impossible de retirer lâ€™article. RÃ©essayez."},500);
+      }
+    }
+
     if (url.pathname === "/api/products" &&
         (request.method === "POST" || request.method === "PUT")) {
       try {
