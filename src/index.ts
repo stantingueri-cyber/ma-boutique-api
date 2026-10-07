@@ -1,3 +1,5 @@
+import { storefrontHtml } from "./renderHtml";
+
 interface Env {
   DB: D1Database;
 }
@@ -66,12 +68,18 @@ export default {
       });
     }
 
-    if (url.pathname === "/" && request.method === "GET") {
-      return json({
-        success: true,
-        app: "Ma Boutique en Ligne",
-        message: "API opÃ©rationnelle",
-      });
+    if ((url.pathname === "/" || url.pathname === "/Index.html") && request.method === "GET") {
+      return new Response(storefrontHtml,{headers:{"Content-Type":"text/html; charset=UTF-8","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
+    }
+    if (url.pathname === "/api/shops" && request.method === "GET") {
+      const slug=(url.searchParams.get("slug")||"").trim();
+      if(!slug || slug.length>200)return json({success:false,message:"Lien de boutique invalide"},400);
+      try{
+        const shop=await env.DB.prepare(`SELECT id,name,slug,logo_url,whatsapp,country,currency,language
+          FROM shops WHERE slug=?`).bind(slug).first();
+        if(!shop)return json({success:false,message:"Boutique introuvable"},404);
+        return json({success:true,shop});
+      }catch(error){return json({success:false,message:"Impossible de charger la boutique. RÃ©essayez."},500);}
     }
 
     if (url.pathname === "/api/test" && request.method === "GET") {
