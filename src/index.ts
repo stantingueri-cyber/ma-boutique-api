@@ -79,7 +79,43 @@ export default {
           FROM shops WHERE slug=?`).bind(slug).first();
         if(!shop)return json({success:false,message:"Boutique introuvable"},404);
         return json({success:true,shop});
-      }catch(error){return json({success:false,message:"Impossible de charger la boutique. RÃ©essayez."},500);}
+      }catch(error){return json({success:false,message:"Impossible de charger la boutique. Réessayez."},500);}
+    }
+
+    if (url.pathname === "/api/payments" && ["GET","POST"].includes(request.method)) {
+      try {
+        const body = request.method === "POST" ? await request.json() as any : null;
+        const shopId = Number(body?.shop_id ?? url.searchParams.get("shop_id"));
+        if (!Number.isSafeInteger(shopId) || shopId <= 0) return json({success:false,message:"Boutique invalide"},400);
+        if (request.method === "POST" && !await ownsShop(env,request,shopId))
+          return json({success:false,message:"Reconnectez-vous pour enregistrer les paiements."},403);
+        const shop = await env.DB.prepare("SELECT id FROM shops WHERE id=?").bind(shopId).first();
+        if (!shop) return json({success:false,message:"Boutique introuvable"},404);
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_shop_payments (
+          shop_id INTEGER PRIMARY KEY REFERENCES shops(id), config TEXT NOT NULL)` ).run();
+        if (request.method === "GET") {
+          const row = await env.DB.prepare("SELECT config FROM mbl_shop_payments WHERE shop_id=?").bind(shopId).first<{config:string}>();
+          return json({success:true,payments:row ? JSON.parse(row.config) : {delivery:true,mobile:{}}});
+        }
+        const input = body?.payments;
+        if (!input || typeof input.delivery !== "boolean" || !input.mobile || typeof input.mobile !== "object" || Array.isArray(input.mobile))
+          return json({success:false,message:"Configuration des paiements invalide"},400);
+        const mobile: Record<string,{enabled:boolean,number:string}> = {};
+        const entries = Object.entries(input.mobile);
+        if (entries.length > 30) return json({success:false,message:"Trop de moyens de paiement"},400);
+        for (const [id,value] of entries) {
+          const x = value as any;
+          if (!/^[a-z][a-z0-9_]{0,39}$/.test(id) || !x || typeof x.enabled !== "boolean" || typeof x.number !== "string" || x.number.length > 120 || (x.enabled && !x.number.trim()))
+            return json({success:false,message:"Vérifiez les numéros des moyens de paiement activés."},400);
+          mobile[id] = {enabled:x.enabled,number:x.number.trim()};
+        }
+        if (!input.delivery && !Object.values(mobile).some(x=>x.enabled))
+          return json({success:false,message:"Activez au moins un mode de paiement."},400);
+        const payments = {delivery:input.delivery,mobile};
+        await env.DB.prepare(`INSERT INTO mbl_shop_payments (shop_id,config) VALUES (?,?)
+          ON CONFLICT(shop_id) DO UPDATE SET config=excluded.config`).bind(shopId,JSON.stringify(payments)).run();
+        return json({success:true,payments});
+      } catch (_) { return json({success:false,message:"Impossible d’enregistrer ou charger les paiements. Réessayez."},500); }
     }
 
     if (url.pathname === "/api/test" && request.method === "GET") {
@@ -90,19 +126,19 @@ export default {
 
         return json({
           success: true,
-          message: "Connexion D1 rÃ©ussie",
+          message: "Connexion D1 réussie",
           tables: tables.results,
         });
       } catch (error) {
         return json({
           success: false,
-          message: "Erreur de connexion Ã  D1",
+          message: "Erreur de connexion à D1",
           error: String(error),
         }, 500);
       }
     }
 
-    // CrÃ©ation du commerÃ§ant et de sa boutique
+    // Création du commerçant et de sa boutique
     if (url.pathname === "/api/shops" && request.method === "POST") {
       try {
         const body = await request.json() as {
@@ -149,7 +185,7 @@ export default {
         if (existingMerchant) {
           return json({
             success: false,
-            message: "Cette adresse e-mail est dÃ©jÃ  utilisÃ©e",
+            message: "Cette adresse e-mail est déjà utilisée",
           }, 409);
         }
 
@@ -160,7 +196,7 @@ export default {
         if (existingShop) {
           return json({
             success: false,
-            message: "Ce lien de boutique est dÃ©jÃ  utilisÃ©",
+            message: "Ce lien de boutique est déjà utilisé",
           }, 409);
         }
 
@@ -200,7 +236,7 @@ export default {
 
         return json({
           success: true,
-          message: "Boutique crÃ©Ã©e avec succÃ¨s",
+          message: "Boutique créée avec succès",
           merchant_id: merchantId,
           shop_id: shop.meta.last_row_id,
           session_token: await issueSession(env,Number(merchantId)),
@@ -209,13 +245,13 @@ export default {
       } catch (error) {
         return json({
           success: false,
-          message: "Impossible de crÃ©er la boutique",
+          message: "Impossible de créer la boutique",
           error: String(error),
         }, 500);
       }
     }
 
-    // Connexion du commerÃ§ant
+    // Connexion du commerçant
     if (url.pathname === "/api/login" && request.method === "POST") {
       try {
         const body = await request.json() as {
@@ -258,7 +294,7 @@ export default {
         if (!shop) {
           return json({
             success: false,
-            message: "Aucune boutique liÃ©e Ã  ce compte",
+            message: "Aucune boutique liée à ce compte",
           }, 404);
         }
 
@@ -312,15 +348,15 @@ export default {
             !Number.isSafeInteger(body.id) || body.id<=0)
           return json({success:false,message:"Article invalide"},400);
         if (!await ownsShop(env,request,body.shop_id))
-          return json({success:false,message:"Reconnectez-vous Ã  votre boutique."},401);
+          return json({success:false,message:"Reconnectez-vous à votre boutique."},401);
         const product=await env.DB.prepare("SELECT id FROM products WHERE id=? AND shop_id=?")
           .bind(body.id,body.shop_id).first();
         if(!product)return json({success:false,message:"Article introuvable dans cette boutique"},404);
         await env.DB.prepare("UPDATE products SET active=0 WHERE id=? AND shop_id=?")
           .bind(body.id,body.shop_id).run();
-        return json({success:true,message:"Article retirÃ©"});
+        return json({success:true,message:"Article retiré"});
       } catch(error) {
-        return json({success:false,message:"Impossible de retirer lâ€™article. RÃ©essayez."},500);
+        return json({success:false,message:"Impossible de retirer l’article. Réessayez."},500);
       }
     }
 
@@ -336,7 +372,7 @@ export default {
             !Number.isSafeInteger(body.stock) || body.stock < 0 ||
             (body.old_price != null && (!Number.isFinite(body.old_price) || body.old_price < 0)) ||
             (editing && (!Number.isSafeInteger(body.id) || body.id <= 0))) {
-          return json({success:false,message:"Champs de lâ€™article invalides"},400);
+          return json({success:false,message:"Champs de l’article invalides"},400);
         }
         const images = body.images;
         if (images !== undefined && (!Array.isArray(images) || images.length > 3 ||
@@ -369,9 +405,9 @@ export default {
         }
         const results = await env.DB.batch(statements);
         return json({success:true,product_id:editing ? body.id : results[0].meta.last_row_id,
-          message:editing ? "Article modifiÃ© avec ses photos" : "Article crÃ©Ã© avec ses photos"},editing ? 200 : 201);
+          message:editing ? "Article modifié avec ses photos" : "Article créé avec ses photos"},editing ? 200 : 201);
       } catch(error) {
-        return json({success:false,message:"Impossible dâ€™enregistrer lâ€™article et ses photos"},500);
+        return json({success:false,message:"Impossible d’enregistrer l’article et ses photos"},500);
       }
     }
 
@@ -399,18 +435,18 @@ export default {
         const prior = await env.DB.prepare(`SELECT om.fingerprint,o.id,o.total FROM mbl_order_meta om
           JOIN orders o ON o.id=om.order_id WHERE om.request_key=?`).bind(b.request_key).first<any>();
         if (prior) {
-          if (prior.fingerprint!==fingerprint) return json({success:false,message:"RÃ©fÃ©rence de commande dÃ©jÃ  utilisÃ©e"},409);
+          if (prior.fingerprint!==fingerprint) return json({success:false,message:"Référence de commande déjà utilisée"},409);
           return json({success:true,order_id:prior.id,total:prior.total,replayed:true});
         }
         const rows = await env.DB.prepare(`SELECT id,name,price,stock FROM products WHERE shop_id=? AND active=1
           AND id IN (${items.map(()=>"?").join(",")})`).bind(b.shop_id,...items.map(i=>i.product_id)).all<any>();
         const list = items.map(i=>({item:i,product:rows.results.find(p=>Number(p.id)===i.product_id)}));
         if (list.some(x=>!x.product || Number(x.product.stock)<x.item.quantity))
-          return json({success:false,message:"Un article est indisponible ou sa quantitÃ© dÃ©passe le stock"},409);
+          return json({success:false,message:"Un article est indisponible ou sa quantité dépasse le stock"},409);
         const total = list.reduce((t,x)=>t+Number(x.product!.price)*x.item.quantity,0);
         if (!Number.isSafeInteger(total)||total<=0) return json({success:false,message:"Montant de commande invalide"},400);
         // Reject stale displayed prices, instead of silently changing the amount.
-        if (b.expected_total!==total) return json({success:false,message:"Le prix a changÃ©. Rechargez les articles avant de commander."},409);
+        if (b.expected_total!==total) return json({success:false,message:"Le prix a changé. Rechargez les articles avant de commander."},409);
         const statements = [env.DB.prepare(`INSERT INTO orders
           (shop_id,customer_name,customer_phone,customer_address,payment_method,total)
           VALUES (?,?,?,?,?,?)`).bind(b.shop_id,normalized.customer_name,normalized.customer_phone,
@@ -430,12 +466,12 @@ export default {
           throw error;
         }
         return json({success:true,order_id:results[0].meta.last_row_id,total},201);
-      } catch(error) {return json({success:false,message:"Impossible dâ€™enregistrer la commande. Vos informations sont conservÃ©es pour rÃ©essayer."},500);}
+      } catch(error) {return json({success:false,message:"Impossible d’enregistrer la commande. Vos informations sont conservées pour réessayer."},500);}
     }
     if (url.pathname === "/api/orders" && request.method === "GET") {
       try {
         const sid=Number(url.searchParams.get("shop_id"));
-        if(!await ownsShop(env,request,sid)) return json({success:false,message:"Reconnectez-vous Ã  votre espace commerÃ§ant pour consulter les commandes."},401);
+        if(!await ownsShop(env,request,sid)) return json({success:false,message:"Reconnectez-vous à votre espace commerçant pour consulter les commandes."},401);
         const result=await env.DB.batch([
           env.DB.prepare(`SELECT o.*,COALESCE(om.validated,0) AS sale_validated FROM orders o
             LEFT JOIN mbl_order_meta om ON om.order_id=o.id WHERE o.shop_id=? ORDER BY o.id DESC`).bind(sid),
@@ -449,7 +485,7 @@ export default {
       try {
         const b=await request.json() as any;
         if(!Number.isSafeInteger(b.order_id)||!Number.isSafeInteger(b.shop_id)) return json({success:false,message:"Commande invalide"},400);
-        if(!await ownsShop(env,request,b.shop_id)) return json({success:false,message:"Reconnectez-vous Ã  votre espace commerÃ§ant."},401);
+        if(!await ownsShop(env,request,b.shop_id)) return json({success:false,message:"Reconnectez-vous à votre espace commerçant."},401);
         const order=await env.DB.prepare("SELECT id FROM orders WHERE id=? AND shop_id=?").bind(b.order_id,b.shop_id).first();
         if(!order) return json({success:false,message:"Commande introuvable"},404);
         const key=crypto.randomUUID();
@@ -468,8 +504,8 @@ export default {
             .bind(b.order_id,b.shop_id,b.order_id,b.order_id,key)
         ];
         await env.DB.batch(statements);
-        return json({success:true,message:"Vente validÃ©e et stock mis Ã  jour"});
-      }catch(error){return json({success:false,message:"Vente non validÃ©e. VÃ©rifiez le stock des articles et rÃ©essayez."},409);}
+        return json({success:true,message:"Vente validée et stock mis à jour"});
+      }catch(error){return json({success:false,message:"Vente non validée. Vérifiez le stock des articles et réessayez."},409);}
     }
 
     return json({
