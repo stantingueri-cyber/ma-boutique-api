@@ -59,6 +59,14 @@ async function ensureProductDiscountSupport(env: Env) {
     allow_discount INTEGER NOT NULL DEFAULT 1 CHECK(allow_discount IN (0,1)))`).run();
 }
 
+async function ensureFavoritesSupport(env: Env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_product_favorites (
+    shop_id INTEGER NOT NULL REFERENCES shops(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    visitor_hash TEXT NOT NULL,
+    PRIMARY KEY(shop_id,product_id,visitor_hash))`).run();
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -86,6 +94,49 @@ export default {
         if(!shop)return json({success:false,message:"Boutique introuvable"},404);
         return json({success:true,shop});
       }catch(error){return json({success:false,message:"Impossible de charger la boutique. Réessayez."},500);}
+    }
+
+    if (url.pathname === "/api/favorites" && ["GET","POST"].includes(request.method)) {
+      try {
+        const body=request.method==="POST"?await request.json() as any:null;
+        const sid=Number(body?.shop_id??url.searchParams.get("shop_id"));
+        const visitor=body?.visitor_key??url.searchParams.get("visitor_key");
+        if(!Number.isSafeInteger(sid)||sid<=0)return json({success:false,message:"Boutique invalide"},400);
+        if(visitor!=null && (typeof visitor!=="string"||!/^[a-f0-9]{64}$/.test(visitor)))
+          return json({success:false,message:"Favori invalide"},400);
+        if(request.method==="POST" && (visitor==null || !Number.isSafeInteger(body.product_id) ||
+          body.product_id<=0 || typeof body.enabled!=="boolean"))
+          return json({success:false,message:"Favori invalide"},400);
+        if(request.method==="GET" && visitor==null && !await ownsShop(env,request,sid))
+          return json({success:false,message:"Reconnectez-vous à votre boutique."},401);
+        if(!await env.DB.prepare("SELECT id FROM shops WHERE id=?").bind(sid).first())
+          return json({success:false,message:"Boutique introuvable"},404);
+        await ensureFavoritesSupport(env);
+        if(request.method==="POST") {
+          const product=await env.DB.prepare("SELECT id FROM products WHERE id=? AND shop_id=? AND active=1")
+            .bind(body.product_id,sid).first();
+          if(!product)return json({success:false,message:"Article indisponible"},404);
+          const visitorHash=await hashPassword(visitor);
+          if(body.enabled)await env.DB.prepare(`INSERT OR IGNORE INTO mbl_product_favorites
+            (shop_id,product_id,visitor_hash) VALUES (?,?,?)`).bind(sid,body.product_id,visitorHash).run();
+          else await env.DB.prepare("DELETE FROM mbl_product_favorites WHERE shop_id=? AND product_id=? AND visitor_hash=?")
+            .bind(sid,body.product_id,visitorHash).run();
+          return json({success:true,enabled:body.enabled});
+        }
+        if(visitor!=null) {
+          const rows=await env.DB.prepare(`SELECT f.product_id FROM mbl_product_favorites f
+            JOIN products p ON p.id=f.product_id AND p.shop_id=f.shop_id
+            WHERE f.shop_id=? AND f.visitor_hash=? AND p.active=1 ORDER BY f.product_id`)
+            .bind(sid,await hashPassword(visitor)).all();
+          return json({success:true,product_ids:(rows.results as any[]).map(x=>Number(x.product_id))});
+        }
+        const rows=await env.DB.prepare(`SELECT f.product_id,COUNT(*) AS favorite_count FROM mbl_product_favorites f
+          JOIN products p ON p.id=f.product_id AND p.shop_id=f.shop_id
+          WHERE f.shop_id=? AND p.active=1 GROUP BY f.product_id ORDER BY favorite_count DESC,f.product_id`)
+          .bind(sid).all();
+        return json({success:true,total:(rows.results as any[]).reduce((sum,x)=>sum+Number(x.favorite_count),0),
+          favorites:rows.results});
+      }catch(error){return json({success:false,message:"Impossible de synchroniser les favoris. Réessayez."},500);}
     }
 
     if (url.pathname === "/api/shop-settings" && ["GET","POST"].includes(request.method)) {
