@@ -53,6 +53,12 @@ async function ownsShop(env: Env, request: Request, shopId: number) {
     .bind(shopId,await hashPassword(token),Date.now()).first();
 }
 
+async function ensureProductDiscountSupport(env: Env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_product_settings (
+    product_id INTEGER PRIMARY KEY REFERENCES products(id),
+    allow_discount INTEGER NOT NULL DEFAULT 1 CHECK(allow_discount IN (0,1)))`).run();
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -356,10 +362,12 @@ export default {
       if (!Number.isSafeInteger(shopId) || shopId <= 0)
         return json({success:false,message:"shop_id obligatoire"},400);
       try {
+        await ensureProductDiscountSupport(env);
         const results = await env.DB.batch([
-          env.DB.prepare(`SELECT id, shop_id, name, description, price, old_price,
-            stock, category, active FROM products WHERE shop_id=? AND active=1
-            ORDER BY id DESC`).bind(shopId),
+          env.DB.prepare(`SELECT p.id, p.shop_id, p.name, p.description, p.price, p.old_price,
+            p.stock, p.category, p.active, COALESCE(ps.allow_discount,1) AS allow_discount
+            FROM products p LEFT JOIN mbl_product_settings ps ON ps.product_id=p.id
+            WHERE p.shop_id=? AND p.active=1 ORDER BY p.id DESC`).bind(shopId),
           env.DB.prepare(`SELECT pi.product_id, pi.image_url, pi.position
             FROM product_images pi JOIN products p ON p.id=pi.product_id
             WHERE p.shop_id=? AND p.active=1 ORDER BY pi.position, pi.id`).bind(shopId)
@@ -371,7 +379,7 @@ export default {
           galleries.set(Number(row.product_id),list);
         }
         return json({success:true,products:(results[0].results as any[]).map(p=>({
-          ...p, images:galleries.get(Number(p.id)) || []
+          ...p, allow_discount:p.allow_discount!==0, images:galleries.get(Number(p.id)) || []
         }))});
       } catch(error) {
         return json({success:false,message:"Impossible de charger les articles"},500);
@@ -408,9 +416,12 @@ export default {
             !Number.isFinite(body.price) || body.price <= 0 ||
             !Number.isSafeInteger(body.stock) || body.stock < 0 ||
             (body.old_price != null && (!Number.isFinite(body.old_price) || body.old_price < 0)) ||
+            (body.allow_discount !== undefined && typeof body.allow_discount !== "boolean") ||
             (editing && (!Number.isSafeInteger(body.id) || body.id <= 0))) {
           return json({success:false,message:"Champs de l’article invalides"},400);
         }
+        if (body.allow_discount !== undefined && !await ownsShop(env,request,body.shop_id))
+          return json({success:false,message:"Reconnectez-vous à votre boutique."},401);
         const images = body.images;
         if (images !== undefined && (!Array.isArray(images) || images.length > 3 ||
           images.some((im:unknown)=>typeof im !== "string" || im.length > 350000 ||
@@ -439,6 +450,15 @@ export default {
                 .bind(body.id,images[i],i+1)
             : env.DB.prepare(`INSERT INTO product_images (product_id,image_url,position)
                 VALUES ((SELECT MAX(id) FROM products),?,?)`).bind(images[i],i+1));
+        }
+        if (body.allow_discount !== undefined) {
+          await ensureProductDiscountSupport(env);
+          statements.push(editing
+            ? env.DB.prepare(`INSERT INTO mbl_product_settings (product_id,allow_discount) VALUES (?,?)
+                ON CONFLICT(product_id) DO UPDATE SET allow_discount=excluded.allow_discount`)
+                .bind(body.id,body.allow_discount?1:0)
+            : env.DB.prepare(`INSERT INTO mbl_product_settings (product_id,allow_discount)
+                VALUES ((SELECT MAX(id) FROM products),?)`).bind(body.allow_discount?1:0));
         }
         const results = await env.DB.batch(statements);
         return json({success:true,product_id:editing ? body.id : results[0].meta.last_row_id,
