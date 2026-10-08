@@ -2,6 +2,7 @@ import { storefrontHtml } from "./renderHtml-3";
 
 interface Env {
   DB: D1Database;
+  AI?: { run(model:string, input:unknown):Promise<{image?:string}> };
 }
 
 function json(data: unknown, status = 200) {
@@ -69,6 +70,80 @@ async function ensureFavoritesSupport(env: Env) {
     PRIMARY KEY(shop_id,product_id,visitor_hash))`).run();
 }
 
+const V11_ICONS:Record<string,string>={"192":"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","512":"iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7GkOtAAAWvklEQVR4nO3deZCc5X3g8e6eQzOjgzk0QloJECBAKMExYAF2bA4hGePEwYCBbO2atTeOE6eclGu9VXY2l7Mb24lzOQ4V4nJiUk4qaxDmju0gyZIFBmwOy2AjARJIIKFzDmnumZ7u/AFljDLSHG+/0+/o9/kU/1Alnn6K0fS3+32f93nyH1r5oxwA8RSqPQEAqkMAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEACEoAAIISAICgBAAgKAEA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AgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABCUAAEEJAEBQAgAQlAAABPUfjPtbtfqIjVoAAAAASUVORK5CYII="};
+const V11_SW=`const CACHE='mbl-v11-shell';
+self.addEventListener('install',event=>{self.skipWaiting();});
+self.addEventListener('activate',event=>event.waitUntil((async()=>{
+ for(const key of await caches.keys())if(key.startsWith('mbl-')&&key!==CACHE)await caches.delete(key);
+ await self.clients.claim();
+})()));
+self.addEventListener('fetch',event=>{
+ const url=new URL(event.request.url);
+ if(event.request.method!=='GET'||url.origin!==self.location.origin||url.pathname.startsWith('/api/'))return;
+ if(event.request.mode==='navigate'&&(url.pathname==='/'||url.pathname==='/Index.html')){
+  event.respondWith((async()=>{
+   const cache=await caches.open(CACHE);
+   const key=new Request(self.location.origin+'/');
+   try{const response=await fetch(event.request);if(response.ok)await cache.put(key,response.clone());return response;}
+   catch(_){return await cache.match(key)||new Response('Connexion indisponible. Reconnectez-vous puis rechargez la boutique.',{status:503,headers:{'Content-Type':'text/plain; charset=UTF-8'}});}
+  })());
+ }
+});`;
+async function handleV11(request:Request,env:Env,url:URL):Promise<Response|null>{
+ if(url.pathname==='/manifest.webmanifest'&&request.method==='GET'){
+  const slug=(url.searchParams.get('shop')||'').trim();
+  const start=slug?'/?shop='+encodeURIComponent(slug):'/';
+  return new Response(JSON.stringify({id:start,name:'Ma Boutique en Ligne',short_name:'Ma Boutique',
+   description:'Vos articles et commandes dans votre boutique en ligne.',start_url:start,scope:'/',
+   display:'standalone',background_color:'#f8f9fb',theme_color:'#6035d1',lang:'fr',
+   icons:[192,512].map(n=>({src:'/app-icon-'+n+'.png',sizes:n+'x'+n,type:'image/png',purpose:'any maskable'}))}),
+   {headers:{'Content-Type':'application/manifest+json','Cache-Control':'no-cache'}});
+ }
+ const icon=url.pathname.match(/^\/app-icon-(192|512)\.png$/);
+ if(icon&&request.method==='GET')return new Response(Uint8Array.from(atob(V11_ICONS[icon[1]]),x=>x.charCodeAt(0)),
+  {headers:{'Content-Type':'image/png','Cache-Control':'public, max-age=86400'}});
+ if(url.pathname==='/sw.js'&&request.method==='GET')return new Response(V11_SW,
+  {headers:{'Content-Type':'text/javascript; charset=UTF-8','Cache-Control':'no-cache','Service-Worker-Allowed':'/'}});
+ if(url.pathname==='/api/session'&&request.method==='GET'){
+  const sid=Number(url.searchParams.get('shop_id'));
+  if(!Number.isSafeInteger(sid)||sid<=0)return json({success:false,message:'Boutique invalide.'},400);
+  try{return await ownsShop(env,request,sid)?json({success:true}):json({success:false,message:'Session expirée. Reconnectez-vous.'},401);}
+  catch(_){return json({success:false,message:'Vérification momentanément indisponible.'},503);}
+ }
+ if(url.pathname==='/api/photos/enhance'&&request.method==='POST'){
+  try{
+   if(Number(request.headers.get('content-length')||0)>360000)return json({success:false,message:'Photo trop volumineuse.'},413);
+   const text=await request.text();if(text.length>360000)return json({success:false,message:'Photo trop volumineuse.'},413);
+   const body=JSON.parse(text),sid=Number(body.shop_id);
+   if(!Number.isSafeInteger(sid)||sid<=0)return json({success:false,message:'Boutique invalide.'},400);
+   if(!await ownsShop(env,request,sid))return json({success:false,message:'Reconnectez-vous à votre boutique.'},401);
+   if(!env.AI)return json({success:false,message:'Le service IA doit être activé pour cette application. Votre photo originale est conservée.'},503);
+   const match=typeof body.image==='string'&&body.image.match(/^data:image\/(jpeg|png);base64,([A-Za-z0-9+/]+={0,2})$/);
+   if(!match||body.image.length>350000)return json({success:false,message:'Photo invalide.'},400);
+   const binary=Uint8Array.from(atob(match[2]),x=>x.charCodeAt(0));
+   // Atomic per-shop reservations: at most ten requests per UTC day, including failed runs.
+   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_ai_usage (
+    shop_id INTEGER NOT NULL, usage_day TEXT NOT NULL, requests INTEGER NOT NULL, PRIMARY KEY(shop_id,usage_day))`).run();
+   const day=new Date().toISOString().slice(0,10);
+   const reservation=await env.DB.prepare(`INSERT INTO mbl_ai_usage(shop_id,usage_day,requests) VALUES(?,?,1)
+    ON CONFLICT(shop_id,usage_day) DO UPDATE SET requests=requests+1 WHERE requests<10 RETURNING requests`)
+    .bind(sid,day).first();
+   if(!reservation)return json({success:false,message:'Limite de 10 améliorations IA par jour atteinte. Réessayez demain.'},429);
+   const form=new FormData();
+   form.append('input_image_0',new Blob([binary],{type:'image/'+match[1]}),'product.'+(match[1]==='jpeg'?'jpg':'png'));
+   form.append('prompt','Retouch this exact product photograph for an online store. Improve lighting, white balance and clarity naturally. Keep the exact same product, shape, color, markings, text, logos, material and number of objects. Do not add, replace or remove any product or invent details. Keep the composition and background.');
+   form.append('width',String(Math.max(256,Math.min(1024,Math.round((Number(body.width)||512)/16)*16))));
+   form.append('height',String(Math.max(256,Math.min(1024,Math.round((Number(body.height)||512)/16)*16))));
+   const multipart=new Response(form);
+   const result=await env.AI.run('@cf/black-forest-labs/flux-2-klein-4b',
+    {multipart:{body:multipart.body,contentType:multipart.headers.get('content-type')}});
+   if(typeof result?.image!=='string'||!result.image)return json({success:false,message:'L’IA n’a pas renvoyé de photo. Réessayez.'},502);
+   return json({success:true,image:'data:image/png;base64,'+result.image});
+  }catch(e){return json({success:false,message:e instanceof SyntaxError?'Demande invalide.':'Amélioration IA indisponible. Votre photo originale est conservée.'},e instanceof SyntaxError?400:502);}
+ }
+ return null;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -87,6 +162,8 @@ export default {
     if ((url.pathname === "/" || url.pathname === "/Index.html") && request.method === "GET") {
       return new Response(storefrontHtml,{headers:{"Content-Type":"text/html; charset=UTF-8","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
     }
+    const v11=await handleV11(request,env,url);
+    if(v11)return v11;
     if (url.pathname === "/api/shops" && request.method === "GET") {
       const slug=(url.searchParams.get("slug")||"").trim();
       if(!slug || slug.length>200)return json({success:false,message:"Lien de boutique invalide"},400);
