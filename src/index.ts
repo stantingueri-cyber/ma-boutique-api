@@ -33,7 +33,9 @@ async function ensureOrderSupport(env: Env) {
       token_hash TEXT PRIMARY KEY, merchant_id INTEGER NOT NULL, expires_at INTEGER NOT NULL)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_order_meta (
       order_id INTEGER PRIMARY KEY REFERENCES orders(id), request_key TEXT UNIQUE,
-      fingerprint TEXT, validated INTEGER NOT NULL DEFAULT 0 CHECK(validated IN (0,1)), validation_key TEXT)`)
+      fingerprint TEXT, validated INTEGER NOT NULL DEFAULT 0 CHECK(validated IN (0,1)), validation_key TEXT)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_order_cancellations (
+      order_id INTEGER PRIMARY KEY REFERENCES orders(id), cancelled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`) 
   ]);
 }
 async function issueSession(env: Env, merchantId: number) {
@@ -581,13 +583,31 @@ export default {
         const sid=Number(url.searchParams.get("shop_id"));
         if(!await ownsShop(env,request,sid)) return json({success:false,message:"Reconnectez-vous à votre espace commerçant pour consulter les commandes."},401);
         const result=await env.DB.batch([
-          env.DB.prepare(`SELECT o.*,COALESCE(om.validated,0) AS sale_validated FROM orders o
-            LEFT JOIN mbl_order_meta om ON om.order_id=o.id WHERE o.shop_id=? ORDER BY o.id DESC`).bind(sid),
+          env.DB.prepare(`SELECT o.*,COALESCE(om.validated,0) AS sale_validated,oc.cancelled_at AS sale_cancelled_at FROM orders o
+            LEFT JOIN mbl_order_meta om ON om.order_id=o.id LEFT JOIN mbl_order_cancellations oc ON oc.order_id=o.id WHERE o.shop_id=? ORDER BY o.id DESC`).bind(sid),
           env.DB.prepare(`SELECT oi.* FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.shop_id=? ORDER BY oi.id`).bind(sid)
         ]);
         return json({success:true,orders:(result[0].results as any[]).map(o=>({...o,
           order_items:(result[1].results as any[]).filter(i=>i.order_id===o.id)}))});
       }catch(error){return json({success:false,message:"Impossible de charger les commandes"},500);}
+    }
+    if(url.pathname==="/api/orders/cancel" && request.method==="POST") {
+      try {
+        const b=await request.json() as any;
+        if(!Number.isSafeInteger(b.order_id)||!Number.isSafeInteger(b.shop_id)) return json({success:false,message:"Commande invalide"},400);
+        if(!await ownsShop(env,request,b.shop_id)) return json({success:false,message:"Reconnectez-vous à votre espace commerçant."},401);
+        const order=await env.DB.prepare("SELECT id FROM orders WHERE id=? AND shop_id=?").bind(b.order_id,b.shop_id).first();
+        if(!order) return json({success:false,message:"Commande introuvable"},404);
+        await env.DB.batch([
+          env.DB.prepare(`INSERT OR IGNORE INTO mbl_order_cancellations (order_id)
+            SELECT id FROM orders WHERE id=? AND shop_id=? AND NOT EXISTS (
+              SELECT 1 FROM mbl_order_meta WHERE order_id=? AND validated=1)`)
+            .bind(b.order_id,b.shop_id,b.order_id)
+        ]);
+        const cancelled=await env.DB.prepare("SELECT order_id FROM mbl_order_cancellations WHERE order_id=?").bind(b.order_id).first();
+        if(!cancelled) return json({success:false,message:"Cette vente est déjà validée et ne peut pas être annulée."},409);
+        return json({success:true,message:"Commande annulée"});
+      }catch(error){return json({success:false,message:"Impossible d’annuler la commande. Réessayez."},500);}
     }
     if(url.pathname==="/api/orders/validate" && request.method==="POST") {
       try {
@@ -603,7 +623,8 @@ export default {
             SELECT 1 FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id
             WHERE oi.order_id=? AND (p.id IS NULL OR p.shop_id<>? OR p.active<>1 OR
               p.stock<(SELECT SUM(quantity) FROM order_items WHERE order_id=? AND product_id=p.id))
-          ) THEN -1 ELSE 1 END,validation_key=? WHERE order_id=? AND validated=0`)
+          ) THEN -1 ELSE 1 END,validation_key=? WHERE order_id=? AND validated=0
+            AND NOT EXISTS (SELECT 1 FROM mbl_order_cancellations WHERE order_id=mbl_order_meta.order_id)`)
           .bind(b.order_id,b.shop_id,b.order_id,key,b.order_id),
           env.DB.prepare(`UPDATE products SET stock=stock-(SELECT SUM(quantity) FROM order_items
             WHERE order_id=? AND product_id=products.id)
@@ -612,6 +633,8 @@ export default {
             .bind(b.order_id,b.shop_id,b.order_id,b.order_id,key)
         ];
         await env.DB.batch(statements);
+        const cancelled=await env.DB.prepare("SELECT order_id FROM mbl_order_cancellations WHERE order_id=?").bind(b.order_id).first();
+        if(cancelled) return json({success:false,message:"Cette commande est annulée et ne peut plus être validée."},409);
         return json({success:true,message:"Vente validée et stock mis à jour"});
       }catch(error){return json({success:false,message:"Vente non validée. Vérifiez le stock des articles et réessayez."},409);}
     }
