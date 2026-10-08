@@ -82,6 +82,43 @@ export default {
       }catch(error){return json({success:false,message:"Impossible de charger la boutique. Réessayez."},500);}
     }
 
+    if (url.pathname === "/api/shop-settings" && ["GET","POST"].includes(request.method)) {
+      try {
+        const body = request.method === "POST" ? await request.json() as any : null;
+        const shopId = Number(body?.shop_id ?? url.searchParams.get("shop_id"));
+        if (!Number.isSafeInteger(shopId) || shopId <= 0) return json({success:false,message:"Boutique invalide"},400);
+        if (request.method === "POST" && !await ownsShop(env,request,shopId))
+          return json({success:false,message:"Reconnectez-vous pour enregistrer les paramètres."},403);
+        const shop = await env.DB.prepare("SELECT id,name,logo_url,whatsapp FROM shops WHERE id=?").bind(shopId).first();
+        if (!shop) return json({success:false,message:"Boutique introuvable"},404);
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mbl_shop_settings (
+          shop_id INTEGER PRIMARY KEY REFERENCES shops(id), tagline TEXT NOT NULL DEFAULT '',
+          allow_discount INTEGER NOT NULL DEFAULT 1 CHECK(allow_discount IN (0,1)))`).run();
+        if (request.method === "GET") {
+          const meta = await env.DB.prepare("SELECT tagline,allow_discount FROM mbl_shop_settings WHERE shop_id=?").bind(shopId).first<{tagline:string,allow_discount:number}>();
+          return json({success:true,settings:{name:shop.name,logo_url:shop.logo_url||"",whatsapp:shop.whatsapp||"",
+            tagline:meta?.tagline||"",allow_discount:meta ? meta.allow_discount===1 : true}});
+        }
+        const x = body?.settings;
+        if (!x || typeof x.name !== "string" || !x.name.trim() || x.name.length>200 ||
+          typeof x.whatsapp !== "string" || !/^[0-9]{6,20}$/.test(x.whatsapp) ||
+          typeof x.tagline !== "string" || x.tagline.length>2000 || typeof x.allow_discount !== "boolean" ||
+          typeof x.logo_url !== "string" || x.logo_url.length>500000 ||
+          (x.logo_url && !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(x.logo_url) && !/^https:\/\/[^\s<>"']+$/.test(x.logo_url)))
+          return json({success:false,message:"Vérifiez le nom, le numéro WhatsApp et le logo."},400);
+        const settings={name:x.name.trim(),whatsapp:x.whatsapp,logo_url:x.logo_url,
+          tagline:x.tagline.trim(),allow_discount:x.allow_discount};
+        await env.DB.batch([
+          env.DB.prepare("UPDATE shops SET name=?,whatsapp=?,logo_url=?,updated_at=? WHERE id=?")
+            .bind(settings.name,settings.whatsapp,settings.logo_url||null,new Date().toISOString(),shopId),
+          env.DB.prepare(`INSERT INTO mbl_shop_settings (shop_id,tagline,allow_discount) VALUES (?,?,?)
+            ON CONFLICT(shop_id) DO UPDATE SET tagline=excluded.tagline,allow_discount=excluded.allow_discount`)
+            .bind(shopId,settings.tagline,settings.allow_discount?1:0)
+        ]);
+        return json({success:true,settings});
+      } catch (_) { return json({success:false,message:"Impossible de sauvegarder ou charger les paramètres. Réessayez."},500); }
+    }
+
     if (url.pathname === "/api/payments" && ["GET","POST"].includes(request.method)) {
       try {
         const body = request.method === "POST" ? await request.json() as any : null;
