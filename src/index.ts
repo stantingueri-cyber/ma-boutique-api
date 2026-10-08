@@ -1,4 +1,4 @@
-import { storefrontHtml } from "./renderHtml";
+import { storefrontHtml } from "./renderHtml-3";
 
 interface Env {
   DB: D1Database;
